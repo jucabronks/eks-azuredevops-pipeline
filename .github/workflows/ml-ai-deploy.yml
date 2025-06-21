@@ -1,0 +1,380 @@
+name: Deploy ML/AI Stack
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - 'terraform/modules/ml-ai/**'
+      - 'terraform/aws/ml-ai.tf'
+      - 'terraform/azure/ml-ai.tf'
+      - 'terraform/gcp/ml-ai.tf'
+      - '.github/workflows/ml-ai-deploy.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'terraform/modules/ml-ai/**'
+      - 'terraform/aws/ml-ai.tf'
+      - 'terraform/azure/ml-ai.tf'
+      - 'terraform/gcp/ml-ai.tf'
+      - '.github/workflows/ml-ai-deploy.yml'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+          - staging
+          - prod
+      cloud_provider:
+        description: 'Cloud provider'
+        required: true
+        default: 'aws'
+        type: choice
+        options:
+          - aws
+          - azure
+          - gcp
+      train_models:
+        description: 'Train new ML models'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  TF_VERSION: "1.5.0"
+  HELM_VERSION: "3.12.0"
+  KUBECTL_VERSION: "1.27.0"
+  PYTHON_VERSION: "3.9"
+
+jobs:
+  validate-terraform:
+    name: Validate Terraform Configuration
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: ${{ env.TF_VERSION }}
+
+    - name: Terraform Format Check
+      run: |
+        cd terraform/modules/ml-ai
+        terraform fmt -check -recursive
+
+    - name: Terraform Init and Validate
+      run: |
+        cd terraform/${{ github.event.inputs.cloud_provider || 'aws' }}
+        terraform init
+        terraform validate
+
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Run Trivy vulnerability scanner
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: 'fs'
+        scan-ref: '.'
+        format: 'sarif'
+        output: 'trivy-results.sarif'
+
+    - name: Upload Trivy scan results to GitHub Security tab
+      uses: github/codeql-action/upload-sarif@v3
+      if: always()
+      with:
+        sarif_file: 'trivy-results.sarif'
+
+  train-models:
+    name: Train ML Models
+    runs-on: ubuntu-latest
+    if: github.event.inputs.train_models == 'true' || github.event_name == 'workflow_dispatch'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+
+    - name: Install ML dependencies
+      run: |
+        pip install pandas numpy scikit-learn tensorflow torch
+        pip install boto3 azure-ml google-cloud-aiplatform
+
+    - name: Train Anomaly Detection Model
+      run: |
+        python scripts/train_anomaly_detector.py \
+          --cloud-provider ${{ github.event.inputs.cloud_provider || 'aws' }} \
+          --environment ${{ github.event.inputs.environment || 'dev' }}
+
+    - name: Train Predictive Scaling Model
+      run: |
+        python scripts/train_predictive_scaler.py \
+          --cloud-provider ${{ github.event.inputs.cloud_provider || 'aws' }} \
+          --environment ${{ github.event.inputs.environment || 'dev' }}
+
+    - name: Upload Models to Cloud Storage
+      run: |
+        python scripts/upload_models.py \
+          --cloud-provider ${{ github.event.inputs.cloud_provider || 'aws' }} \
+          --environment ${{ github.event.inputs.environment || 'dev' }}
+
+  deploy-aws:
+    name: Deploy to AWS
+    runs-on: ubuntu-latest
+    if: github.event.inputs.cloud_provider == 'aws' || (github.event_name == 'push' && contains(github.ref, 'main'))
+    environment: ${{ github.event.inputs.environment || 'dev' }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ secrets.AWS_REGION }}
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: ${{ env.TF_VERSION }}
+
+    - name: Setup kubectl
+      uses: azure/setup-kubectl@v3
+      with:
+        version: ${{ env.KUBECTL_VERSION }}
+
+    - name: Setup Helm
+      uses: azure/setup-helm@v3
+      with:
+        version: ${{ env.HELM_VERSION }}
+
+    - name: Terraform Init
+      run: |
+        cd terraform/aws
+        terraform init
+
+    - name: Terraform Plan
+      run: |
+        cd terraform/aws
+        terraform plan \
+          -var="environment=${{ github.event.inputs.environment || 'dev' }}" \
+          -var="cluster_name=${{ secrets.AWS_CLUSTER_NAME }}" \
+          -var="vpc_id=${{ secrets.AWS_VPC_ID }}" \
+          -var="ml_alert_emails=[\"${{ secrets.ML_ALERT_EMAIL }}\"]" \
+          -out=tfplan
+
+    - name: Terraform Apply
+      if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+      run: |
+        cd terraform/aws
+        terraform apply -auto-approve tfplan
+
+    - name: Deploy ML/AI Services
+      run: |
+        aws eks update-kubeconfig --name ${{ secrets.AWS_CLUSTER_NAME }} --region ${{ secrets.AWS_REGION }}
+        kubectl apply -f kubernetes/ml-ai/
+
+    - name: Verify ML/AI Deployment
+      run: |
+        aws eks update-kubeconfig --name ${{ secrets.AWS_CLUSTER_NAME }} --region ${{ secrets.AWS_REGION }}
+        kubectl get pods -n ml-ai
+        kubectl get services -n ml-ai
+
+    - name: Test ML/AI Endpoints
+      run: |
+        aws eks update-kubeconfig --name ${{ secrets.AWS_CLUSTER_NAME }} --region ${{ secrets.AWS_REGION }}
+        kubectl port-forward svc/ml-ai-dashboard 8080:8080 -n ml-ai &
+        sleep 10
+        curl -f http://localhost:8080/health || exit 1
+
+  deploy-azure:
+    name: Deploy to Azure
+    runs-on: ubuntu-latest
+    if: github.event.inputs.cloud_provider == 'azure'
+    environment: ${{ github.event.inputs.environment || 'dev' }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Azure Login
+      uses: azure/login@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: ${{ env.TF_VERSION }}
+
+    - name: Setup kubectl
+      uses: azure/setup-kubectl@v3
+      with:
+        version: ${{ env.KUBECTL_VERSION }}
+
+    - name: Setup Helm
+      uses: azure/setup-helm@v3
+      with:
+        version: ${{ env.HELM_VERSION }}
+
+    - name: Terraform Init
+      run: |
+        cd terraform/azure
+        terraform init
+
+    - name: Terraform Plan
+      run: |
+        cd terraform/azure
+        terraform plan \
+          -var="environment=${{ github.event.inputs.environment || 'dev' }}" \
+          -var="cluster_name=${{ secrets.AZURE_CLUSTER_NAME }}" \
+          -out=tfplan
+
+    - name: Terraform Apply
+      if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+      run: |
+        cd terraform/azure
+        terraform apply -auto-approve tfplan
+
+  deploy-gcp:
+    name: Deploy to GCP
+    runs-on: ubuntu-latest
+    if: github.event.inputs.cloud_provider == 'gcp'
+    environment: ${{ github.event.inputs.environment || 'dev' }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Google Auth
+      uses: google-github-actions/auth@v2
+      with:
+        credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: ${{ env.TF_VERSION }}
+
+    - name: Setup kubectl
+      uses: azure/setup-kubectl@v3
+      with:
+        version: ${{ env.KUBECTL_VERSION }}
+
+    - name: Setup Helm
+      uses: azure/setup-helm@v3
+      with:
+        version: ${{ env.HELM_VERSION }}
+
+    - name: Terraform Init
+      run: |
+        cd terraform/gcp
+        terraform init
+
+    - name: Terraform Plan
+      run: |
+        cd terraform/gcp
+        terraform plan \
+          -var="environment=${{ github.event.inputs.environment || 'dev' }}" \
+          -var="cluster_name=${{ secrets.GCP_CLUSTER_NAME }}" \
+          -out=tfplan
+
+    - name: Terraform Apply
+      if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+      run: |
+        cd terraform/gcp
+        terraform apply -auto-approve tfplan
+
+  model-validation:
+    name: Validate ML Models
+    runs-on: ubuntu-latest
+    needs: [deploy-aws, deploy-azure, deploy-gcp]
+    if: always()
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+
+    - name: Install dependencies
+      run: |
+        pip install requests pytest
+
+    - name: Test Anomaly Detection
+      run: |
+        python scripts/test_anomaly_detection.py \
+          --cloud-provider ${{ github.event.inputs.cloud_provider || 'aws' }} \
+          --environment ${{ github.event.inputs.environment || 'dev' }}
+
+    - name: Test Predictive Scaling
+      run: |
+        python scripts/test_predictive_scaling.py \
+          --cloud-provider ${{ github.event.inputs.cloud_provider || 'aws' }} \
+          --environment ${{ github.event.inputs.environment || 'dev' }}
+
+    - name: Test Cost Optimization
+      run: |
+        python scripts/test_cost_optimization.py \
+          --cloud-provider ${{ github.event.inputs.cloud_provider || 'aws' }} \
+          --environment ${{ github.event.inputs.environment || 'dev' }}
+
+  notify:
+    name: Notify Deployment Status
+    runs-on: ubuntu-latest
+    needs: [deploy-aws, deploy-azure, deploy-gcp, model-validation]
+    if: always()
+    
+    steps:
+    - name: Notify Slack
+      if: ${{ secrets.SLACK_WEBHOOK_URL != '' }}
+      uses: 8398a7/action-slack@v3
+      with:
+        status: ${{ job.status }}
+        channel: '#ml-ai'
+        webhook_url: ${{ secrets.SLACK_WEBHOOK_URL }}
+        text: |
+          ML/AI deployment ${{ job.status }} for environment ${{ github.event.inputs.environment || 'dev' }}
+          Cloud Provider: ${{ github.event.inputs.cloud_provider || 'aws' }}
+          Models Trained: ${{ github.event.inputs.train_models || 'false' }}
+          Commit: ${{ github.sha }}
+          Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+    - name: Create Deployment Summary
+      if: always()
+      run: |
+        echo "## ML/AI Deployment Summary" >> $GITHUB_STEP_SUMMARY
+        echo "- **Environment**: ${{ github.event.inputs.environment || 'dev' }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Cloud Provider**: ${{ github.event.inputs.cloud_provider || 'aws' }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Status**: ${{ needs.deploy-aws.result || needs.deploy-azure.result || needs.deploy-gcp.result }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Models Trained**: ${{ github.event.inputs.train_models || 'false' }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Model Validation**: ${{ needs.model-validation.result }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Commit**: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Deployed Components:" >> $GITHUB_STEP_SUMMARY
+        echo "- Anomaly Detection Service" >> $GITHUB_STEP_SUMMARY
+        echo "- Predictive Scaling Service" >> $GITHUB_STEP_SUMMARY
+        echo "- Intelligent Monitoring Service" >> $GITHUB_STEP_SUMMARY
+        echo "- Cost Optimization Service" >> $GITHUB_STEP_SUMMARY
+        echo "- ML/AI Dashboard" >> $GITHUB_STEP_SUMMARY
+        echo "- SageMaker/Azure ML/GCP AI Platform Integration" >> $GITHUB_STEP_SUMMARY 

@@ -1,0 +1,17 @@
+# ============================================================================
+# Agendamento de backup automático com Velero
+# Este recurso agenda um backup diário de todos os recursos e volumes do cluster.
+# O schedule usa cron (exemplo: todo dia às 2h da manhã).
+# ============================================================================
+apiVersion: velero.io/v1
+kind: Schedule
+metadata:
+  name: daily-backup
+  namespace: velero
+spec:
+  schedule: "0 2 * * *"  # Cron: todo dia às 2h
+  template:
+    ttl: 168h0m0s  # Tempo de retenção: 7 dias
+    includedNamespaces:
+      - "*"  # Todos os namespaces
+    snapshotVolumes: true  # Inclui volumes persistentes 

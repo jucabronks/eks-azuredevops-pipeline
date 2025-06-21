@@ -1,0 +1,11 @@
+{
+  "name": "eks-azuredevops-app",
+  "version": "1.0.0",
+  "main": "app.js",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2",
+    "prom-client": "^14.1.1",
+    "aws-sdk": "^2.1481.0"
+  }
+} 

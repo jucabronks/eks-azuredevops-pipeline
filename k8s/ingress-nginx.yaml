@@ -1,0 +1,18 @@
+# Ingress para expor o app via NGINX Ingress Controller
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: eks-azuredevops-nginx  # Nome do recurso Ingress
+  annotations:
+    kubernetes.io/ingress.class: nginx  # Usa o NGINX Ingress Controller
+spec:
+  rules:
+    - http:
+        paths:
+          - path: /  # Caminho raiz da aplicação
+            pathType: Prefix
+            backend:
+              service:
+                name: eks-azuredevops-app  # Nome do serviço exposto
+                port:
+                  number: 80  # Porta do serviço 

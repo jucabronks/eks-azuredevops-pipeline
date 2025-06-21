@@ -1,0 +1,8 @@
+# ============================================================================
+# Cria um namespace dedicado para o Velero
+# Separar o Velero em seu próprio namespace facilita a gestão, segurança e limpeza dos recursos de backup.
+# ============================================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: velero 

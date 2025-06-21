@@ -1,0 +1,125 @@
+# =============================================================================
+# GITIGNORE - PROJETO VM
+# =============================================================================
+
+# Terraform
+*.tfstate
+*.tfstate.*
+*.tfvars
+!example.tfvars
+!environments/*.tfvars
+.terraform/
+.terraform.lock.hcl
+terraform.tfstate.backup
+*.tfplan
+*.tfplan.json
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Cloud provider credentials
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+service-account.json
+credentials.json
+
+# Logs
+*.log
+logs/
+*.log.*
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.backup
+
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Docker
+.dockerignore
+Dockerfile.prod
+docker-compose.override.yml
+
+# Kubernetes
+*.kubeconfig
+kubeconfig
+
+# Monitoring
+prometheus_data/
+grafana_data/
+
+# Backup files
+*.backup
+*.bak
+*.old
+
+# Security
+secrets/
+.secrets/
+*.secret
+
+# Documentation build
+docs/_build/
+site/
+
+# Test coverage
+coverage/
+*.coverage
+.coverage.*
+
+# Performance
+*.prof
+*.profile
+
+# Local development
+.local/
+local/
+dev/ 

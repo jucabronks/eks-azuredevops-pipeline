@@ -1,0 +1,29 @@
+# Deployment para rodar o app Node.js no cluster
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: eks-azuredevops-app  # Nome do deployment
+  labels:
+    app: eks-azuredevops-app  # Label para identificar o app
+spec:
+  replicas: 2  # Número de pods
+  selector:
+    matchLabels:
+      app: eks-azuredevops-app  # Seleciona pods com esse label
+  template:
+    metadata:
+      labels:
+        app: eks-azuredevops-app  # Label aplicado aos pods
+    spec:
+      containers:
+        - name: app
+          image: <seu_ecr_repo>:<tag>  # Imagem Docker do app
+          ports:
+            - containerPort: 3000  # Porta exposta pelo app
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi 

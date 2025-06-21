@@ -1,0 +1,5 @@
+apiVersion: v2
+name: projeto-vm-app
+version: 0.1.0
+description: Helm chart para deploy da aplicação Node.js exemplo do projeto VM
+appVersion: "1.0.0" 

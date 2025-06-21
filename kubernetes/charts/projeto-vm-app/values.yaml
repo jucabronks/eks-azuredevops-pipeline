@@ -1,0 +1,123 @@
+# ============================================================================
+# VALUES.YAML - PROJETO VM APP HELM CHART
+# ============================================================================
+# Este arquivo define os valores padrão para o chart Helm do projeto-vm-app.
+# Os valores podem ser sobrescritos durante a instalação ou upgrade do chart.
+# ============================================================================
+
+# Configurações da aplicação
+app:
+  name: projeto-vm-app
+  version: "1.0.0"
+  image:
+    repository: projeto-vm-app
+    tag: "latest"
+    pullPolicy: IfNotPresent
+
+# Configurações do deployment
+deployment:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+
+# Configurações do container
+container:
+  port: 3000
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: 3000
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+  readinessProbe:
+    httpGet:
+      path: /ready
+      port: 3000
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+# Configurações do service
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 3000
+
+# Configurações do ingress
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+  hosts:
+    - host: projeto-vm.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: projeto-vm-tls
+      hosts:
+        - projeto-vm.local
+
+# Configurações de monitoramento
+monitoring:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    interval: 30s
+    path: /metrics
+    port: 3000
+
+# Configurações de segurança
+security:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    runAsNonRoot: true
+    runAsUser: 1000
+    capabilities:
+      drop:
+        - ALL
+
+# Configurações de ambiente
+env:
+  NODE_ENV: production
+  PORT: 3000
+  LOG_LEVEL: info
+
+# Configurações de volumes
+volumes:
+  config:
+    enabled: false
+    mountPath: /app/config
+    configMap:
+      name: projeto-vm-config
+
+# Configurações de labels e annotations
+labels:
+  app: projeto-vm-app
+  version: "1.0.0"
+  environment: production
+
+annotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "3000"
+  prometheus.io/path: "/metrics" 

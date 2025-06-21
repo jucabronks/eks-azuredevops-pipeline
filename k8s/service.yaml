@@ -1,0 +1,13 @@
+# Service para expor o app Node.js dentro do cluster
+apiVersion: v1
+kind: Service
+metadata:
+  name: eks-azuredevops-app  # Nome do serviço
+spec:
+  selector:
+    app: eks-azuredevops-app  # Seleciona pods com esse label
+  ports:
+    - protocol: TCP  # Protocolo usado
+      port: 80  # Porta exposta pelo serviço
+      targetPort: 3000  # Porta do container do app
+  type: ClusterIP  # Tipo de serviço (interno ao cluster) 

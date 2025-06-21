@@ -1,0 +1,5 @@
+# Valores customizados para Grafana
+adminUser: admin           # Usuário admin padrão
+adminPassword: admin123    # Senha admin padrão
+service:
+  type: LoadBalancer       # Expõe Grafana via LoadBalancer para acesso externo 

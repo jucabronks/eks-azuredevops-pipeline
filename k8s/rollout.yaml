@@ -1,0 +1,34 @@
+# Argo Rollout para deploy canário do app Node.js
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: eks-azuredevops-app  # Nome do rollout
+spec:
+  replicas: 2                # Número de réplicas do app
+  selector:
+    matchLabels:
+      app: eks-azuredevops-app  # Seleciona pods pelo label
+  template:
+    metadata:
+      labels:
+        app: eks-azuredevops-app
+    spec:
+      containers:
+        - name: app
+          image: <seu_ecr_repo>:<tag>  # Imagem Docker do app
+          ports:
+            - containerPort: 3000      # Porta exposta pelo app
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+  strategy:
+    canary:
+      steps:
+        - setWeight: 20               # 20% do tráfego para nova versão
+        - pause: {duration: 60}       # Pausa de 60s para validação
+        - setWeight: 100              # 100% do tráfego após validação
+        - pause: {}                   # Pausa manual para promover 

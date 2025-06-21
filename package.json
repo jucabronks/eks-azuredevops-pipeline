@@ -1,0 +1,12 @@
+{
+  "name": "projeto-vm-app",
+  "version": "1.0.0",
+  "description": "Aplicação de exemplo para ambiente multicloud Kubernetes.",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2"
+  }
+} 

@@ -1,0 +1,61 @@
+# ============================================================================
+# Instalação do Argo Rollouts no cluster Kubernetes
+# Este manifesto instala o controller do Argo Rollouts no namespace argo-rollouts.
+# O controller é responsável por gerenciar recursos Rollout, experimentos e análise de deploys.
+# ============================================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: argo-rollouts
+---
+# Controller do Argo Rollouts
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: argo-rollouts
+  namespace: argo-rollouts
+  labels:
+    app: argo-rollouts
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: argo-rollouts
+  template:
+    metadata:
+      labels:
+        app: argo-rollouts
+    spec:
+      containers:
+        - name: argo-rollouts
+          image: quay.io/argoproj/argo-rollouts:v1.9.0
+          args:
+            - controller
+          ports:
+            - containerPort: 8090
+          livenessProbe:
+            httpGet:
+              path: /metrics
+              port: 8090
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: 8090
+            initialDelaySeconds: 10
+            periodSeconds: 20
+---
+# Permissões necessárias para o controller
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: argo-rollouts
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: argo-rollouts
+subjects:
+  - kind: ServiceAccount
+    name: default
+    namespace: argo-rollouts 

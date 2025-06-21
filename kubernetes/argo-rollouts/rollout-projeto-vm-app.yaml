@@ -1,0 +1,65 @@
+# ============================================================================
+# Rollout do Argo Rollouts para a aplicação projeto-vm-app
+# Este recurso substitui o Deployment tradicional e permite deploy canário, monitoramento e rollback automático.
+# ============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: projeto-vm-app
+  namespace: dev
+spec:
+  replicas: 2
+  revisionHistoryLimit: 10  # Mantém histórico para rollback
+  selector:
+    matchLabels:
+      app: projeto-vm-app
+  template:
+    metadata:
+      labels:
+        app: projeto-vm-app
+    spec:
+      containers:
+        - name: app
+          image: SEU_REGISTRY/projeto-vm-app:latest
+          ports:
+            - containerPort: 3000
+          env:
+            - name: PROJECT_NAME
+              value: "projeto-vm"
+            - name: ENVIRONMENT
+              value: "dev"
+            - name: INSTANCE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: REGION
+              value: "k8s"
+          # Health checks para rollback automático
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+            successThreshold: 1
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+            successThreshold: 1
+  # Estratégia canário: libera o novo deploy para 1 pod, monitora, depois libera para todos
+  strategy:
+    canary:
+      steps:
+        - setWeight: 50  # 50% dos pods recebem a nova versão
+        - pause: {duration: 60}  # Pausa 60s para monitorar saúde
+        - setWeight: 100 # Se tudo ok, libera para 100%
+        - pause: {duration: 30}  # Pausa final para monitoramento
+      maxSurge: 1
+      maxUnavailable: 0 

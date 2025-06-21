@@ -1,0 +1,14 @@
+# Valores customizados para Datadog Agent
+# Substitua <DATADOG_API_KEY> pela sua chave
+apiKey: <DATADOG_API_KEY>         # Chave de API do Datadog
+site: datadoghq.com               # Site do Datadog (padrão)
+daemonset:
+  useHostNetwork: true            # Usa rede do host para melhor coleta
+  useHostPID: true                # Usa PID do host
+  containers:
+    agent:
+      env:
+        - name: DD_KUBERNETES_KUBELET_HOST
+          valueFrom:
+            fieldRef:
+              fieldPath: status.hostIP  # Coleta IP do host para métricas 

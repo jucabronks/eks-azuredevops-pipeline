@@ -1,0 +1,304 @@
+name: Deploy Observability Stack
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - 'terraform/modules/monitoring/**'
+      - 'terraform/modules/logging/**'
+      - 'terraform/modules/tracing/**'
+      - 'terraform/aws/monitoring.tf'
+      - 'terraform/azure/monitoring.tf'
+      - 'terraform/gcp/monitoring.tf'
+      - '.github/workflows/observability.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'terraform/modules/monitoring/**'
+      - 'terraform/modules/logging/**'
+      - 'terraform/modules/tracing/**'
+      - 'terraform/aws/monitoring.tf'
+      - 'terraform/azure/monitoring.tf'
+      - 'terraform/gcp/monitoring.tf'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+          - staging
+          - prod
+      cloud_provider:
+        description: 'Cloud provider'
+        required: true
+        default: 'aws'
+        type: choice
+        options:
+          - aws
+          - azure
+          - gcp
+
+env:
+  TF_VERSION: "1.5.0"
+  HELM_VERSION: "3.12.0"
+  KUBECTL_VERSION: "1.27.0"
+
+jobs:
+  validate-terraform:
+    name: Validate Terraform Configuration
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: ${{ env.TF_VERSION }}
+
+    - name: Terraform Format Check
+      run: |
+        cd terraform/modules/monitoring
+        terraform fmt -check -recursive
+        cd ../logging
+        terraform fmt -check -recursive
+        cd ../tracing
+        terraform fmt -check -recursive
+
+    - name: Terraform Init and Validate
+      run: |
+        cd terraform/${{ github.event.inputs.cloud_provider || 'aws' }}
+        terraform init
+        terraform validate
+
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Run Trivy vulnerability scanner
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: 'fs'
+        scan-ref: '.'
+        format: 'sarif'
+        output: 'trivy-results.sarif'
+
+    - name: Upload Trivy scan results to GitHub Security tab
+      uses: github/codeql-action/upload-sarif@v3
+      if: always()
+      with:
+        sarif_file: 'trivy-results.sarif'
+
+  deploy-aws:
+    name: Deploy to AWS
+    runs-on: ubuntu-latest
+    if: github.event.inputs.cloud_provider == 'aws' || (github.event_name == 'push' && contains(github.ref, 'main'))
+    environment: ${{ github.event.inputs.environment || 'dev' }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ secrets.AWS_REGION }}
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: ${{ env.TF_VERSION }}
+
+    - name: Setup kubectl
+      uses: azure/setup-kubectl@v3
+      with:
+        version: ${{ env.KUBECTL_VERSION }}
+
+    - name: Setup Helm
+      uses: azure/setup-helm@v3
+      with:
+        version: ${{ env.HELM_VERSION }}
+
+    - name: Terraform Init
+      run: |
+        cd terraform/aws
+        terraform init
+
+    - name: Terraform Plan
+      run: |
+        cd terraform/aws
+        terraform plan \
+          -var="environment=${{ github.event.inputs.environment || 'dev' }}" \
+          -var="cluster_name=${{ secrets.AWS_CLUSTER_NAME }}" \
+          -var="grafana_admin_password=${{ secrets.GRAFANA_ADMIN_PASSWORD }}" \
+          -var="kibana_admin_password=${{ secrets.KIBANA_ADMIN_PASSWORD }}" \
+          -var="domain=${{ secrets.DOMAIN }}" \
+          -var="enable_ingress=true" \
+          -out=tfplan
+
+    - name: Terraform Apply
+      if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+      run: |
+        cd terraform/aws
+        terraform apply -auto-approve tfplan
+
+    - name: Verify Deployment
+      run: |
+        aws eks update-kubeconfig --name ${{ secrets.AWS_CLUSTER_NAME }} --region ${{ secrets.AWS_REGION }}
+        kubectl get pods -n monitoring
+        kubectl get pods -n logging
+        kubectl get pods -n tracing
+
+    - name: Test Monitoring Endpoints
+      run: |
+        aws eks update-kubeconfig --name ${{ secrets.AWS_CLUSTER_NAME }} --region ${{ secrets.AWS_REGION }}
+        kubectl port-forward svc/grafana-service 3000:80 -n monitoring &
+        sleep 10
+        curl -f http://localhost:3000/api/health || exit 1
+
+  deploy-azure:
+    name: Deploy to Azure
+    runs-on: ubuntu-latest
+    if: github.event.inputs.cloud_provider == 'azure'
+    environment: ${{ github.event.inputs.environment || 'dev' }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Azure Login
+      uses: azure/login@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: ${{ env.TF_VERSION }}
+
+    - name: Setup kubectl
+      uses: azure/setup-kubectl@v3
+      with:
+        version: ${{ env.KUBECTL_VERSION }}
+
+    - name: Setup Helm
+      uses: azure/setup-helm@v3
+      with:
+        version: ${{ env.HELM_VERSION }}
+
+    - name: Terraform Init
+      run: |
+        cd terraform/azure
+        terraform init
+
+    - name: Terraform Plan
+      run: |
+        cd terraform/azure
+        terraform plan \
+          -var="environment=${{ github.event.inputs.environment || 'dev' }}" \
+          -var="cluster_name=${{ secrets.AZURE_CLUSTER_NAME }}" \
+          -var="grafana_admin_password=${{ secrets.GRAFANA_ADMIN_PASSWORD }}" \
+          -var="kibana_admin_password=${{ secrets.KIBANA_ADMIN_PASSWORD }}" \
+          -out=tfplan
+
+    - name: Terraform Apply
+      if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+      run: |
+        cd terraform/azure
+        terraform apply -auto-approve tfplan
+
+  deploy-gcp:
+    name: Deploy to GCP
+    runs-on: ubuntu-latest
+    if: github.event.inputs.cloud_provider == 'gcp'
+    environment: ${{ github.event.inputs.environment || 'dev' }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Google Auth
+      uses: google-github-actions/auth@v2
+      with:
+        credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: ${{ env.TF_VERSION }}
+
+    - name: Setup kubectl
+      uses: azure/setup-kubectl@v3
+      with:
+        version: ${{ env.KUBECTL_VERSION }}
+
+    - name: Setup Helm
+      uses: azure/setup-helm@v3
+      with:
+        version: ${{ env.HELM_VERSION }}
+
+    - name: Terraform Init
+      run: |
+        cd terraform/gcp
+        terraform init
+
+    - name: Terraform Plan
+      run: |
+        cd terraform/gcp
+        terraform plan \
+          -var="environment=${{ github.event.inputs.environment || 'dev' }}" \
+          -var="cluster_name=${{ secrets.GCP_CLUSTER_NAME }}" \
+          -var="grafana_admin_password=${{ secrets.GRAFANA_ADMIN_PASSWORD }}" \
+          -var="kibana_admin_password=${{ secrets.KIBANA_ADMIN_PASSWORD }}" \
+          -out=tfplan
+
+    - name: Terraform Apply
+      if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+      run: |
+        cd terraform/gcp
+        terraform apply -auto-approve tfplan
+
+  notify:
+    name: Notify Deployment Status
+    runs-on: ubuntu-latest
+    needs: [deploy-aws, deploy-azure, deploy-gcp]
+    if: always()
+    
+    steps:
+    - name: Notify Slack
+      if: ${{ secrets.SLACK_WEBHOOK_URL != '' }}
+      uses: 8398a7/action-slack@v3
+      with:
+        status: ${{ job.status }}
+        channel: '#devops'
+        webhook_url: ${{ secrets.SLACK_WEBHOOK_URL }}
+        text: |
+          Observability deployment ${{ job.status }} for environment ${{ github.event.inputs.environment || 'dev' }}
+          Cloud Provider: ${{ github.event.inputs.cloud_provider || 'aws' }}
+          Commit: ${{ github.sha }}
+          Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+    - name: Create Deployment Summary
+      if: always()
+      run: |
+        echo "## Observability Deployment Summary" >> $GITHUB_STEP_SUMMARY
+        echo "- **Environment**: ${{ github.event.inputs.environment || 'dev' }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Cloud Provider**: ${{ github.event.inputs.cloud_provider || 'aws' }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Status**: ${{ needs.deploy-aws.result || needs.deploy-azure.result || needs.deploy-gcp.result }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Commit**: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Deployed Components:" >> $GITHUB_STEP_SUMMARY
+        echo "- Prometheus + Grafana (Monitoring)" >> $GITHUB_STEP_SUMMARY
+        echo "- Fluent Bit + Elasticsearch + Kibana (Logging)" >> $GITHUB_STEP_SUMMARY
+        echo "- Jaeger + OpenTelemetry (Tracing)" >> $GITHUB_STEP_SUMMARY
+        echo "- CloudWatch/Azure Monitor/GCP Monitoring Integration" >> $GITHUB_STEP_SUMMARY 

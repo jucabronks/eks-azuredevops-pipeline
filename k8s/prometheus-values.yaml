@@ -1,0 +1,13 @@
+# Valores customizados para Prometheus no EKS
+prometheus:
+  prometheusSpec:
+    serviceMonitorSelectorNilUsesHelmValues: false  # Permite usar ServiceMonitor customizado
+    podMonitorSelectorNilUsesHelmValues: false      # Permite usar PodMonitor customizado
+    retention: 7d                                  # Retenção de métricas por 7 dias
+    resources:
+      requests:
+        memory: 400Mi
+        cpu: 200m
+      limits:
+        memory: 1Gi
+        cpu: 500m 

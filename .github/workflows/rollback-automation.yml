@@ -1,0 +1,285 @@
+name: Rollback Automation
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - 'kubernetes/charts/**'
+      - 'scripts/intelligent_rollback.py'
+      - '.github/workflows/rollback-automation.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'kubernetes/charts/**'
+      - 'scripts/intelligent_rollback.py'
+      - '.github/workflows/rollback-automation.yml'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to test rollback'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+          - staging
+          - prod
+      test_rollback:
+        description: 'Test rollback scenario'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  TF_VERSION: "1.5.0"
+  HELM_VERSION: "3.12.0"
+  KUBECTL_VERSION: "1.27.0"
+  PYTHON_VERSION: "3.9"
+
+jobs:
+  test-rollback-scenarios:
+    name: Test Rollback Scenarios
+    runs-on: ubuntu-latest
+    if: github.event.inputs.test_rollback == 'true' || github.event_name == 'workflow_dispatch'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+
+    - name: Install dependencies
+      run: |
+        pip install kubernetes prometheus-client requests numpy pandas
+
+    - name: Test Rollback Logic
+      run: |
+        python scripts/test_rollback_logic.py \
+          --environment ${{ github.event.inputs.environment || 'dev' }}
+
+    - name: Test ML Model Predictions
+      run: |
+        python scripts/test_ml_predictions.py \
+          --environment ${{ github.event.inputs.environment || 'dev' }}
+
+  deploy-with-rollback:
+    name: Deploy with Rollback Protection
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    environment: ${{ github.event.inputs.environment || 'dev' }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ secrets.AWS_REGION }}
+
+    - name: Setup kubectl
+      uses: azure/setup-kubectl@v3
+      with:
+        version: ${{ env.KUBECTL_VERSION }}
+
+    - name: Setup Helm
+      uses: azure/setup-helm@v3
+      with:
+        version: ${{ env.HELM_VERSION }}
+
+    - name: Get kubeconfig
+      run: |
+        aws eks update-kubeconfig --name ${{ secrets.AWS_CLUSTER_NAME }} --region ${{ secrets.AWS_REGION }}
+
+    - name: Deploy with Rollback Protection
+      run: |
+        # Deploy with rollback annotations
+        helm upgrade --install projeto-vm-app kubernetes/charts/projeto-vm-app \
+          --namespace ${{ github.event.inputs.environment || 'dev' }} \
+          --set image.repository=${{ secrets.ECR_REGISTRY }}/projeto-vm-app \
+          --set image.tag=${{ github.sha }} \
+          --set env.ENVIRONMENT=${{ github.event.inputs.environment || 'dev' }} \
+          --set rollback.enabled=true \
+          --set rollback.threshold=0.8 \
+          --set rollback.timeout=300 \
+          --wait --timeout=10m
+
+    - name: Verify Deployment Health
+      run: |
+        # Wait for deployment to be ready
+        kubectl wait --for=condition=available deployment/projeto-vm-app \
+          -n ${{ github.event.inputs.environment || 'dev' }} --timeout=300s
+        
+        # Check health endpoints
+        kubectl port-forward svc/projeto-vm-app 8080:80 -n ${{ github.event.inputs.environment || 'dev' }} &
+        sleep 10
+        
+        # Test health endpoints
+        curl -f http://localhost:8080/health || exit 1
+        curl -f http://localhost:8080/ready || exit 1
+        curl -f http://localhost:8080/startup || exit 1
+
+    - name: Simulate Failure and Test Rollback
+      if: github.event.inputs.test_rollback == 'true'
+      run: |
+        # Simulate a failure by deploying a bad image
+        helm upgrade projeto-vm-app kubernetes/charts/projeto-vm-app \
+          --namespace ${{ github.event.inputs.environment || 'dev' }} \
+          --set image.tag=bad-image \
+          --wait --timeout=5m
+        
+        # Wait for rollback to be triggered
+        sleep 60
+        
+        # Check if rollback occurred
+        kubectl get deployment projeto-vm-app -n ${{ github.event.inputs.environment || 'dev' }} -o yaml | grep -A 5 "image:"
+        
+        # Verify rollback was successful
+        kubectl wait --for=condition=available deployment/projeto-vm-app \
+          -n ${{ github.event.inputs.environment || 'dev' }} --timeout=300s
+
+  intelligent-rollback-monitoring:
+    name: Deploy Intelligent Rollback Monitoring
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    environment: ${{ github.event.inputs.environment || 'dev' }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ secrets.AWS_REGION }}
+
+    - name: Setup kubectl
+      uses: azure/setup-kubectl@v3
+      with:
+        version: ${{ env.KUBECTL_VERSION }}
+
+    - name: Get kubeconfig
+      run: |
+        aws eks update-kubeconfig --name ${{ secrets.AWS_CLUSTER_NAME }} --region ${{ secrets.AWS_REGION }}
+
+    - name: Deploy Intelligent Rollback Service
+      run: |
+        # Deploy the intelligent rollback service
+        kubectl apply -f kubernetes/ml-ai/intelligent-rollback.yaml -n ml-ai
+        
+        # Wait for service to be ready
+        kubectl wait --for=condition=available deployment/intelligent-rollback \
+          -n ml-ai --timeout=300s
+
+    - name: Configure Rollback Webhook
+      run: |
+        # Apply webhook configuration
+        kubectl apply -f kubernetes/ml-ai/rollback-webhook.yaml
+        
+        # Verify webhook is working
+        kubectl get validatingwebhookconfigurations intelligent-rollback-webhook
+
+    - name: Test Intelligent Rollback
+      run: |
+        # Test the intelligent rollback service
+        kubectl port-forward svc/intelligent-rollback 8080:8080 -n ml-ai &
+        sleep 10
+        
+        # Test health endpoint
+        curl -f http://localhost:8080/health || exit 1
+        
+        # Test prediction endpoint
+        curl -X POST http://localhost:8080/predict \
+          -H "Content-Type: application/json" \
+          -d '{"deployment": "projeto-vm-app", "namespace": "${{ github.event.inputs.environment || 'dev' }}"}' || exit 1
+
+  rollback-metrics:
+    name: Rollback Metrics and Monitoring
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ secrets.AWS_REGION }}
+
+    - name: Setup kubectl
+      uses: azure/setup-kubectl@v3
+      with:
+        version: ${{ env.KUBECTL_VERSION }}
+
+    - name: Get kubeconfig
+      run: |
+        aws eks update-kubeconfig --name ${{ secrets.AWS_CLUSTER_NAME }} --region ${{ secrets.AWS_REGION }}
+
+    - name: Collect Rollback Metrics
+      run: |
+        # Get rollback metrics from Prometheus
+        kubectl port-forward svc/prometheus-operated 9090:9090 -n monitoring &
+        sleep 10
+        
+        # Query rollback metrics
+        curl -s "http://localhost:9090/api/v1/query?query=rollback_total" | jq .
+        curl -s "http://localhost:9090/api/v1/query?query=failure_prediction_accuracy" | jq .
+
+    - name: Create Rollback Dashboard
+      run: |
+        # Create Grafana dashboard for rollback metrics
+        kubectl port-forward svc/grafana 3000:3000 -n monitoring &
+        sleep 10
+        
+        # Import rollback dashboard
+        curl -X POST http://admin:${{ secrets.GRAFANA_ADMIN_PASSWORD }}@localhost:3000/api/dashboards/db \
+          -H "Content-Type: application/json" \
+          -d @kubernetes/ml-ai/rollback-dashboard.json || echo "Dashboard import failed"
+
+  notify-rollback-status:
+    name: Notify Rollback Status
+    runs-on: ubuntu-latest
+    needs: [deploy-with-rollback, intelligent-rollback-monitoring, rollback-metrics]
+    if: always()
+    
+    steps:
+    - name: Notify Slack
+      if: ${{ secrets.SLACK_WEBHOOK_URL != '' }}
+      uses: 8398a7/action-slack@v3
+      with:
+        status: ${{ job.status }}
+        channel: '#rollback-alerts'
+        webhook_url: ${{ secrets.SLACK_WEBHOOK_URL }}
+        text: |
+          Rollback automation ${{ job.status }} for environment ${{ github.event.inputs.environment || 'dev' }}
+          Test Rollback: ${{ github.event.inputs.test_rollback || 'false' }}
+          Commit: ${{ github.sha }}
+          Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+    - name: Create Rollback Summary
+      if: always()
+      run: |
+        echo "## Rollback Automation Summary" >> $GITHUB_STEP_SUMMARY
+        echo "- **Environment**: ${{ github.event.inputs.environment || 'dev' }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Test Rollback**: ${{ github.event.inputs.test_rollback || 'false' }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Deploy Status**: ${{ needs.deploy-with-rollback.result }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Intelligent Rollback**: ${{ needs.intelligent-rollback-monitoring.result }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Metrics Status**: ${{ needs.rollback-metrics.result }}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Rollback Features:" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ Automatic rollback on health check failures" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ ML/AI-based failure prediction" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ Intelligent rollback service" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ Rollback webhook validation" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ Rollback metrics and monitoring" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ Slack notifications" >> $GITHUB_STEP_SUMMARY 

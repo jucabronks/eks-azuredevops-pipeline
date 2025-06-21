@@ -1,0 +1,105 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "projeto-vm-app.fullname" . }}
+  labels:
+    app: {{ include "projeto-vm-app.name" . }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  # Rollback Strategy
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  # Revision History for Rollback
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: {{ include "projeto-vm-app.name" . }}
+  template:
+    metadata:
+      labels:
+        app: {{ include "projeto-vm-app.name" . }}
+      annotations:
+        # Rollback annotations
+        rollback.kubernetes.io/previous-revision: "{{ .Values.image.tag }}"
+        rollback.kubernetes.io/auto-rollback: "true"
+        rollback.kubernetes.io/health-check-timeout: "300s"
+        rollback.kubernetes.io/error-threshold: "5"
+    spec:
+      containers:
+        - name: app
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - containerPort: 3000
+              name: http
+          env:
+            - name: PROJECT_NAME
+              value: "{{ .Values.env.PROJECT_NAME }}"
+            - name: ENVIRONMENT
+              value: "{{ .Values.env.ENVIRONMENT }}"
+            - name: INSTANCE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: REGION
+              value: "{{ .Values.env.REGION }}"
+          # Health Checks for Rollback
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+            successThreshold: 1
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+            successThreshold: 1
+          startupProbe:
+            httpGet:
+              path: /startup
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 30
+          # Resource Limits
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          # Security Context
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+      # Pod Security Context
+      securityContext:
+        fsGroup: 1000
+        runAsNonRoot: true
+        runAsUser: 1000
+      # Anti-affinity for high availability
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - {{ include "projeto-vm-app.name" . }}
+              topologyKey: kubernetes.io/hostname 

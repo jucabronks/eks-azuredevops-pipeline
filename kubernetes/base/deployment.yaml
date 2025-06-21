@@ -1,0 +1,38 @@
+# ============================================================================
+# Este manifesto é para deploys de aplicações no Kubernetes.
+# O backup e restore de recursos e volumes será feito por um manifesto separado do Velero.
+# Cada manifesto do Velero terá comentários didáticos explicando cada etapa.
+# ============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: projeto-vm-app
+  namespace: dev
+  labels:
+    app: projeto-vm-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: projeto-vm-app
+  template:
+    metadata:
+      labels:
+        app: projeto-vm-app
+    spec:
+      containers:
+        - name: app
+          image: SEU_REGISTRY/projeto-vm-app:latest
+          ports:
+            - containerPort: 3000
+          env:
+            - name: PROJECT_NAME
+              value: "projeto-vm"
+            - name: ENVIRONMENT
+              value: "dev"
+            - name: INSTANCE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: REGION
+              value: "k8s" 

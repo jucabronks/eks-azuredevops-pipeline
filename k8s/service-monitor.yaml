@@ -1,0 +1,18 @@
+# ServiceMonitor para Prometheus monitorar o app Node.js
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: eks-azuredevops-app  # Nome do ServiceMonitor
+  labels:
+    release: prometheus      # Deve bater com o release do Prometheus
+spec:
+  selector:
+    matchLabels:
+      app: eks-azuredevops-app  # Seleciona o serviço do app pelo label
+  endpoints:
+    - port: http               # Porta exposta pelo serviço
+      path: /metrics           # Caminho das métricas Prometheus
+      interval: 30s            # Frequência de coleta
+  namespaceSelector:
+    matchNames:
+      - default                # Namespace onde está o serviço 
